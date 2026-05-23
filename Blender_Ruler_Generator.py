@@ -1,29 +1,43 @@
 import bpy
+import os
+
+def move_to_collection(obj, target_coll):
+    """オブジェクトを現在の全コレクションから外し、指定のコレクションのみに所属させる"""
+    for coll in obj.users_collection:
+        coll.objects.unlink(obj)
+    target_coll.objects.link(obj)
+
+def create_material(name, color):
+    """指定した名前と色のマテリアルを作成して返す"""
+    mat = bpy.data.materials.new(name=name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    # Principled BSDFノードを探してベースカラーを設定
+    bsdf = nodes.get("Principled BSDF")
+    if bsdf:
+        bsdf.inputs['Base Color'].default_value = color
+    return mat
 
 def create_ruler(
     length=10.0, 
     tick_interval=0.1, 
     label_interval=1.0, 
     font_path=None, 
-    font_size=0.2
+    font_size=0.2,
+    body_color=(0.8, 0.8, 0.8, 1.0),  # デフォルト: 薄いグレー (RGBA)
+    tick_color=(0.1, 0.1, 0.1, 1.0)   # デフォルト: 濃いグレー (RGBA)
 ):
-    """
-    Blenderで定規を作成する関数
-    :param length: 定規の全長
-    :param tick_interval: 小さな目盛の間隔
-    :param label_interval: 数字が入る目盛の間隔
-    :param font_path: フォントファイルのパス (Noneの場合はデフォルト)
-    :param font_size: 文字サイズ
-    """
-    
-    # --- 設定 ---
-    ruler_width = 0.5  # 定規の幅（奥行き）
-    ruler_thickness = 0.05 # 定規の厚み
-    tick_length_small = 0.1 # 小さな目盛の長さ
-    tick_length_large = 0.2 # 数字がある目盛の長さ
-    label_offset = -0.3 # 文字の位置オフセット（Y方向）
+    # シーン内の既存のオブジェクトをすべて削除（初期化）
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete()
 
-    # コレクションを作成して整理する
+    # --- 設定 ---
+    ruler_width = 0.5
+    ruler_thickness = 0.05
+    tick_length_small = 0.1
+    tick_length_large = 0.2
+    label_offset = 0.1
+
     collection_name = "Ruler_Collection"
     if collection_name in bpy.data.collections:
         bpy.data.collections.remove(bpy.data.collections[collection_name], do_unlink=True)
@@ -31,40 +45,40 @@ def create_ruler(
     ruler_coll = bpy.data.collections.new(collection_name)
     bpy.context.scene.collection.children.link(ruler_coll)
 
-    # 1. 定規の本体（ベース板）を作成
+    # 1. 定規の本体を作成
     bpy.ops.mesh.primitive_cube_add(size=1.0)
     body = bpy.context.active_object
     body.name = "Ruler_Body"
     body.scale = (length, ruler_width, ruler_thickness)
     body.location = (length / 2, 0, 0)
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    ruler_coll.objects.link(body)
-    bpy.context.scene.collection.objects.unlink(body)
+    
+    # 本体にマテリアルを適用
+    body_mat = create_material("Mat_RulerBody", body_color)
+    body.data.materials.append(body_mat)
 
-    # 目盛線を格納するためのリスト（後で結合して軽量化するため）
+    move_to_collection(body, ruler_coll)
+
     tick_objects = []
 
     # 2. 目盛線とラベルの作成
     current_pos = 0.0
-    while current_pos <= length + 0.001: # 浮動小数点の誤差対策
+    while current_pos <= length + 0.001:
         is_label_tick = (round(current_pos / label_interval, 5) % 1 == 0)
         t_len = tick_length_large if is_label_tick else tick_length_small
         
-        # 目盛線の作成
         bpy.ops.mesh.primitive_cube_add(size=1.0)
         tick = bpy.context.active_object
         tick.name = f"Tick_{current_pos:.2f}"
         tick.scale = (0.01, t_len, ruler_thickness) 
-        # 位置調整: 本体の上に配置し、Y軸方向に伸ばす
-        tick.location = (current_pos, -ruler_width/2 + t_len/2, 0)
+        tick.location = (current_pos, -ruler_width/2 + t_len/2, 0.0001)
         
         ruler_coll.objects.link(tick)
-        bpy.context.scene.collection.objects.unlink(tick)
         tick_objects.append(tick)
 
         # ラベル（テキスト）の作成
         if is_label_tick:
-            bpy.ops.object.text_add(location=(current_pos, label_offset, 0))
+            bpy.ops.object.text_add(location=(current_pos, label_offset, ruler_thickness/2+0.0001))
             txt = bpy.context.active_object
             txt.name = f"Label_{current_pos:.2f}"
             txt.data.body = str(int(round(current_pos)))
@@ -80,8 +94,11 @@ def create_ruler(
                 except:
                     print(f"Font not found at {font_path}")
 
+            # 結合した目盛線にマテリアルを適用
+            label_mat = create_material("Mat_LabelTicks", tick_color)
+            txt.data.materials.append(label_mat)
+
             ruler_coll.objects.link(txt)
-            bpy.context.scene.collection.objects.unlink(txt)
 
         current_pos += tick_interval
 
@@ -91,15 +108,32 @@ def create_ruler(
         obj.select_set(True)
     bpy.context.view_layer.objects.active = tick_objects[0]
     bpy.ops.object.join()
-    bpy.context.active_object.name = "Ruler_Ticks"
+    
+    ticks_combined = bpy.context.active_object
+    ticks_combined.name = "Ruler_Ticks"
+
+    # 結合した目盛線にマテリアルを適用
+    tick_mat = create_material("Mat_RulerTicks", tick_color)
+    ticks_combined.data.materials.append(tick_mat)
+
+def save_blender_file(filepath):
+    try:
+        bpy.ops.wm.save_as_mainfile(filepath=filepath)
+        print(f"ファイルが正常に保存されました: {filepath}")
+    except Exception as e:
+        print(f"保存中にエラーが発生しました: {e}")
 
 # ==========================================
 # 実行パラメータの設定
 # ==========================================
-create_ruler(
-    length=20.0,            # 全長
-    tick_interval=0.1,      # 小目盛の間隔 (0.1 = 10cmごと)
-    label_interval=1.0,     # 数字の間隔 (1.0 = 1mごと)
-    font_path="C:/Windows/Fonts/arial.ttf", # Windowsの例。Macなら /Library/Fonts/... 等に変更してください
-    font_size=0.3          # フォントサイズ
-)
+if __name__ == "__main__":
+    # 例: 本体を黄色(1, 1, 0)、目盛りを黒色(0, 0, 0)で作成する場合
+    create_ruler(
+        length=10.0, 
+        body_color=(1.0, 0.8, 0.0, 1.0), # Yellowish
+        tick_color=(0.0, 0.0, 0.0, 1.0)  # Black
+    )
+  
+    save_path = os.path.join(os.path.expanduser("./"), "simple_model.blend") 
+    save_blender_file(save_path)
+
